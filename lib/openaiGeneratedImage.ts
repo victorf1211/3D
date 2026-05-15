@@ -80,16 +80,7 @@ function pickBase64String(row: Record<string, unknown>): string | null {
   return null;
 }
 
-export type ResolvedGeneratedImage = {
-  imageBase64: string;
-  mimeType: string;
-  dataUrl: string;
-};
-
-export async function resolveGeneratedImageBytes(img: unknown): Promise<ResolvedGeneratedImage | null> {
-  const row = firstImageObject(img);
-  if (!row) return null;
-
+async function resolveImageRow(row: Record<string, unknown>): Promise<ResolvedGeneratedImage | null> {
   const url = pickUrl(row);
   const b64Raw = pickBase64String(row);
 
@@ -127,6 +118,103 @@ export async function resolveGeneratedImageBytes(img: unknown): Promise<Resolved
       mimeType,
       dataUrl: `data:${mimeType};base64,${imageBase64}`,
     };
+  }
+
+  return null;
+}
+
+function firstChoiceMessage(data: unknown): Record<string, unknown> | null {
+  if (!data || typeof data !== "object") return null;
+  const o = data as Record<string, unknown>;
+  const choices = o.choices;
+  if (!Array.isArray(choices) || !choices[0] || typeof choices[0] !== "object") return null;
+  const ch = choices[0] as Record<string, unknown>;
+  const msg = ch.message;
+  if (!msg || typeof msg !== "object") return null;
+  return msg as Record<string, unknown>;
+}
+
+async function resolveFromMessageContent(content: unknown): Promise<ResolvedGeneratedImage | null> {
+  if (typeof content === "string") {
+    const t = content.trim();
+    if (t.startsWith("data:image")) {
+      return resolveImageRow({ image_url: t });
+    }
+    return null;
+  }
+
+  if (!Array.isArray(content)) return null;
+
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const p = part as Record<string, unknown>;
+    const t = p.type;
+    if (t === "image_url" && p.image_url) {
+      const resolved = await resolveImageRow({ image_url: p.image_url });
+      if (resolved) return resolved;
+    }
+    if ((t === "image" || t === "output_image") && typeof p.image === "string") {
+      const r = await resolveImageRow({ b64_json: p.image });
+      if (r) return r;
+    }
+    if (t === "text" && typeof p.text === "string" && p.text.trim().startsWith("data:image")) {
+      const r = await resolveImageRow({ image_url: p.text });
+      if (r) return r;
+    }
+  }
+
+  return null;
+}
+
+export type ResolvedGeneratedImage = {
+  imageBase64: string;
+  mimeType: string;
+  dataUrl: string;
+};
+
+export async function resolveGeneratedImageBytes(img: unknown): Promise<ResolvedGeneratedImage | null> {
+  const row = firstImageObject(img);
+  if (!row) return null;
+  return resolveImageRow(row);
+}
+
+/**
+ * OpenAI images API, plus chat-style responses and a few gateway-specific shapes.
+ */
+export async function resolveFlexibleGeneratedImage(data: unknown): Promise<ResolvedGeneratedImage | null> {
+  const fromImages = await resolveGeneratedImageBytes(data);
+  if (fromImages) return fromImages;
+
+  if (data && typeof data === "object") {
+    const root = data as Record<string, unknown>;
+    const direct = await resolveImageRow(root);
+    if (direct) return direct;
+
+    const img = root.image;
+    if (img && typeof img === "object") {
+      const r = await resolveImageRow(img as Record<string, unknown>);
+      if (r) return r;
+    }
+
+    const images = root.images;
+    if (Array.isArray(images) && images[0] && typeof images[0] === "object") {
+      const r = await resolveImageRow(images[0] as Record<string, unknown>);
+      if (r) return r;
+    }
+
+    const result = root.result;
+    if (result && typeof result === "object") {
+      const r = await resolveImageRow(result as Record<string, unknown>);
+      if (r) return r;
+    }
+  }
+
+  const msg = firstChoiceMessage(data);
+  if (msg) {
+    const fromMsg = await resolveImageRow(msg);
+    if (fromMsg) return fromMsg;
+    const fromContent = await resolveFromMessageContent(msg.content);
+    if (fromContent) return fromContent;
   }
 
   return null;

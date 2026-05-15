@@ -1,24 +1,46 @@
 import { NextResponse } from "next/server";
 import { getOpenAI, getOpenAIImageModel, getOpenAIImageSize } from "@/lib/openai";
-import { resolveGeneratedImageBytes } from "@/lib/openaiGeneratedImage";
+import { resolveFlexibleGeneratedImage, resolveGeneratedImageBytes } from "@/lib/openaiGeneratedImage";
+import { wangsuChatImageRequest } from "@/lib/wangsuImage";
 
 export const maxDuration = 120;
 
 export async function POST(req: Request) {
   try {
     const provider = process.env.IMAGE_PROVIDER?.trim().toLowerCase() ?? "openai";
-    if (provider !== "openai") {
-      return NextResponse.json(
-        {
-          error: `IMAGE_PROVIDER=${provider} is not supported. Use IMAGE_PROVIDER=openai.`,
-        },
-        { status: 501 },
-      );
-    }
-
     const { prompt } = (await req.json()) as { prompt?: string };
     if (!prompt?.trim()) {
       return NextResponse.json({ error: "prompt is required" }, { status: 400 });
+    }
+
+    if (provider === "wangsu") {
+      const raw = await wangsuChatImageRequest(prompt.trim());
+      const resolved = await resolveFlexibleGeneratedImage(raw);
+      if (!resolved) {
+        return NextResponse.json(
+          {
+            error:
+              "Wangsu returned JSON but no recognizable image field. Check gateway response shape or docs.",
+          },
+          { status: 502 },
+        );
+      }
+      const model = process.env.WANGSU_GENERATE_MODEL?.trim() || "gpt-image-2";
+      return NextResponse.json({
+        imageBase64: resolved.imageBase64,
+        mimeType: resolved.mimeType,
+        dataUrl: resolved.dataUrl,
+        model,
+      });
+    }
+
+    if (provider !== "openai") {
+      return NextResponse.json(
+        {
+          error: `IMAGE_PROVIDER=${provider} is not supported. Use openai or wangsu.`,
+        },
+        { status: 501 },
+      );
     }
 
     const openai = getOpenAI();

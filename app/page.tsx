@@ -3,13 +3,12 @@
 import { useCallback, useMemo, useState } from "react";
 import { ModelViewer } from "@/components/ModelViewer";
 
-type Step = "idle" | "enhance" | "image" | "mesh" | "done";
+type Step = "idle" | "image" | "mesh" | "done";
 
 const PIPELINE_STEPS = [
-  { id: "user", label: "Your prompt", step: "idle" as const },
-  { id: "2d-prompt", label: "Better 2D prompt (OpenAI)", step: "enhance" as const },
-  { id: "2d", label: "2D image (OpenAI)", step: "image" as const },
-  { id: "3d", label: "3D assets (Hunyuan3D)", step: "mesh" as const },
+  { id: "user", label: "Your prompt", step: "prompt" as const },
+  { id: "2d", label: "2D image", step: "image" as const },
+  { id: "3d", label: "3D model (Hunyuan3D)", step: "mesh" as const },
 ] as const;
 
 export default function HomePage() {
@@ -21,7 +20,6 @@ export default function HomePage() {
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [userPromptSnapshot, setUserPromptSnapshot] = useState<string | null>(null);
-  const [workingPrompt, setWorkingPrompt] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [glbObjectUrl, setGlbObjectUrl] = useState<string | null>(null);
 
@@ -33,9 +31,9 @@ export default function HomePage() {
 
   const pipelineStepIndex = useMemo(() => {
     if (step === "idle") return -1;
-    if (step === "enhance") return 1;
-    if (step === "image") return 2;
-    if (step === "mesh" || step === "done") return 3;
+    if (step === "image") return 1;
+    if (step === "mesh") return 2;
+    if (step === "done") return 3;
     return -1;
   }, [step]);
 
@@ -44,7 +42,6 @@ export default function HomePage() {
     setLog([]);
     setImageDataUrl(null);
     setUserPromptSnapshot(null);
-    setWorkingPrompt(null);
     if (glbObjectUrl) {
       URL.revokeObjectURL(glbObjectUrl);
       setGlbObjectUrl(null);
@@ -59,32 +56,12 @@ export default function HomePage() {
     setUserPromptSnapshot(trimmedUser);
 
     try {
-      setStep("enhance");
-      pushLog("Step 1→2: OpenAI — refine prompt for 2D image generation…");
-      let finalPrompt = trimmedUser;
-      const er = await fetch("/api/enhance-prompt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmedUser }),
-      });
-      const ej = (await er.json()) as { enhancedPrompt?: string; error?: string };
-      if (er.ok && ej.enhancedPrompt?.trim()) {
-        finalPrompt = ej.enhancedPrompt.trim();
-        setWorkingPrompt(finalPrompt);
-        pushLog(`2D image prompt ready (${finalPrompt.length} chars).`);
-      } else {
-        if (!er.ok) pushLog(`Enhance failed (${ej.error ?? "unknown"}); using your prompt as-is.`);
-        else pushLog("Enhance returned empty; using your prompt as-is.");
-        setWorkingPrompt(trimmedUser);
-        finalPrompt = trimmedUser;
-      }
-
       setStep("image");
-      pushLog("Step 2→3: OpenAI — generate 2D reference image…");
+      pushLog("Step 1→2: Generate 2D reference image from your prompt…");
       const ir = await fetch("/api/generate-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: finalPrompt }),
+        body: JSON.stringify({ prompt: trimmedUser }),
       });
       const ij = (await ir.json()) as {
         dataUrl?: string;
@@ -106,7 +83,7 @@ export default function HomePage() {
       pushLog("2D image received.");
 
       setStep("mesh");
-      pushLog("Step 3→4: Hunyuan3D — image → 3D mesh / GLB assets…");
+      pushLog("Step 2→3: Hunyuan3D — image → 3D mesh / GLB…");
       const mr = await fetch("/api/image-to-3d", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -182,17 +159,13 @@ export default function HomePage() {
     >
       <header style={{ marginBottom: 32 }}>
         <h1 style={{ fontSize: "1.75rem", fontWeight: 650, letterSpacing: "-0.02em", margin: "0 0 8px" }}>
-          Your prompt → better 2D prompt → 2D image → 3D assets
+          Your prompt → 2D image → 3D model
         </h1>
         <p style={{ margin: 0, color: "var(--muted)", lineHeight: 1.55, maxWidth: "72ch" }}>
-          You type a short idea →{" "}
-          <strong style={{ color: "var(--text)", fontWeight: 600 }}>OpenAI</strong> (chat model) turns it into a
-          stronger, image-ready prompt →{" "}
-          <strong style={{ color: "var(--text)", fontWeight: 600 }}>OpenAI</strong> (image model) produces the
-          2D reference →{" "}
-          <strong style={{ color: "var(--text)", fontWeight: 600 }}>Hunyuan3D</strong> reconstructs a 3D
-          mesh (GLB) from that image. Configure{" "}
-          <code style={{ fontSize: "0.9em" }}>HUNYUAN3D_BASE_URL</code> for your Hunyuan3D API server.
+          Your text prompt is sent to the configured image provider for a 2D reference, then{" "}
+          <strong style={{ color: "var(--text)", fontWeight: 600 }}>Hunyuan3D</strong> builds a 3D mesh (GLB) from
+          that image. Set <code style={{ fontSize: "0.9em" }}>HUNYUAN3D_BASE_URL</code> for your Hunyuan3D API
+          server.
         </p>
       </header>
 
@@ -214,7 +187,6 @@ export default function HomePage() {
       >
         {PIPELINE_STEPS.map((s, i) => {
           const active =
-            (s.step === "enhance" && step === "enhance") ||
             (s.step === "image" && step === "image") ||
             (s.step === "mesh" && (step === "mesh" || step === "done"));
           const done = pipelineStepIndex > i || (step === "done" && i < 3);
@@ -308,12 +280,6 @@ export default function HomePage() {
             <span style={{ color: "var(--text)", fontWeight: 600 }}>Your prompt:</span> {userPromptSnapshot}
           </p>
         )}
-        {workingPrompt && (
-          <p style={{ marginTop: 10, fontSize: "0.9rem", color: "var(--muted)", lineHeight: 1.5 }}>
-            <span style={{ color: "var(--text)", fontWeight: 600 }}>OpenAI — prompt used for 2D image:</span>{" "}
-            {workingPrompt}
-          </p>
-        )}
 
         {error && (
           <p
@@ -334,7 +300,7 @@ export default function HomePage() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <section>
-          <h2 style={{ fontSize: "1rem", margin: "0 0 12px", fontWeight: 600 }}>2D preview (OpenAI)</h2>
+          <h2 style={{ fontSize: "1rem", margin: "0 0 12px", fontWeight: 600 }}>2D preview</h2>
           {imageDataUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
