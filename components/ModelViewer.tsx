@@ -28,7 +28,7 @@ function hexToRgba(hex: string): [number, number, number, number] {
   return [r, g, b, 1];
 }
 
-export function ModelViewer({ src, color = "#7c9cff", applyColor: shouldApplyColor = false }: Props) {
+export function ModelViewer({ src, color = "#ffffff", applyColor: shouldApplyColor = false }: Props) {
   const [ready, setReady] = useState(false);
   const loadedRef = useRef(false);
   const viewerRef = useRef<ModelViewerElement | null>(null);

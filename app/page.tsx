@@ -5,103 +5,14 @@ import { ModelViewer } from "@/components/ModelViewer";
 
 type Step = "idle" | "image" | "mesh" | "done";
 type ReferenceMode = "generate" | "upload";
-type ColorBucket = { r: number; g: number; b: number; count: number; score: number };
+
+const DEFAULT_MODEL_COLOR = "#ffffff";
 
 const PIPELINE_STEPS = [
   { id: "user", label: "Reference source", step: "prompt" as const },
   { id: "2d", label: "2D image", step: "image" as const },
   { id: "3d", label: "3D model (Hunyuan3D)", step: "mesh" as const },
 ] as const;
-
-function rgbToHex(r: number, g: number, b: number) {
-  return `#${[r, g, b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
-}
-
-function colorDistance(a: [number, number, number], b: [number, number, number]) {
-  return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
-}
-
-async function detectDominantImageColor(dataUrl: string) {
-  const image = new Image();
-  image.decoding = "async";
-
-  await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
-    image.onerror = () => reject(new Error("Could not read image colors"));
-    image.src = dataUrl;
-  });
-
-  const canvas = document.createElement("canvas");
-  const size = 64;
-  canvas.width = size;
-  canvas.height = size;
-
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
-
-  ctx.drawImage(image, 0, 0, size, size);
-  const pixels = ctx.getImageData(0, 0, size, size).data;
-  const buckets = new Map<string, ColorBucket>();
-  const cornerSamples: Array<[number, number, number]> = [];
-
-  for (const [x, y] of [
-    [2, 2],
-    [size - 3, 2],
-    [2, size - 3],
-    [size - 3, size - 3],
-  ]) {
-    const index = (y * size + x) * 4;
-    cornerSamples.push([pixels[index], pixels[index + 1], pixels[index + 2]]);
-  }
-
-  const backgroundColor: [number, number, number] = [
-    cornerSamples.reduce((sum, color) => sum + color[0], 0) / cornerSamples.length,
-    cornerSamples.reduce((sum, color) => sum + color[1], 0) / cornerSamples.length,
-    cornerSamples.reduce((sum, color) => sum + color[2], 0) / cornerSamples.length,
-  ];
-
-  for (let i = 0; i < pixels.length; i += 4) {
-    const alpha = pixels[i + 3];
-    if (alpha < 128) continue;
-
-    const pixelIndex = i / 4;
-    const x = pixelIndex % size;
-    const y = Math.floor(pixelIndex / size);
-    const dx = (x - size / 2) / (size / 2);
-    const dy = (y - size / 2) / (size / 2);
-    const centerWeight = Math.max(0.2, 1 - Math.sqrt(dx * dx + dy * dy));
-    const r = pixels[i];
-    const g = pixels[i + 1];
-    const b = pixels[i + 2];
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const saturation = max === 0 ? 0 : (max - min) / max;
-    const brightness = (r + g + b) / 3;
-
-    if (brightness > 242 || brightness < 18) continue;
-    if (colorDistance([r, g, b], backgroundColor) < 34 && centerWeight < 0.75) continue;
-
-    const qr = Math.round(r / 24) * 24;
-    const qg = Math.round(g / 24) * 24;
-    const qb = Math.round(b / 24) * 24;
-    const key = `${qr},${qg},${qb}`;
-    const bucket = buckets.get(key) ?? { r: 0, g: 0, b: 0, count: 0, score: 0 };
-    bucket.r += r;
-    bucket.g += g;
-    bucket.b += b;
-    bucket.count += 1;
-    bucket.score += (0.35 + saturation) * centerWeight;
-    buckets.set(key, bucket);
-  }
-
-  let best: ColorBucket | null = null;
-  for (const bucket of buckets.values()) {
-    if (!best || bucket.score > best.score) best = bucket;
-  }
-
-  if (!best) return null;
-  return rgbToHex(best.r / best.count, best.g / best.count, best.b / best.count);
-}
 
 export default function HomePage() {
   const [prompt, setPrompt] = useState(
@@ -110,8 +21,10 @@ export default function HomePage() {
   const [referenceMode, setReferenceMode] = useState<ReferenceMode>("generate");
   const [uploadedImageDataUrl, setUploadedImageDataUrl] = useState<string | null>(null);
   const [async3d, setAsync3d] = useState(false);
-  const [modelColor, setModelColor] = useState("#7c9cff");
+  const [modelColor, setModelColor] = useState(DEFAULT_MODEL_COLOR);
   const [applyFallbackColor, setApplyFallbackColor] = useState(true);
+  const [userTintActive, setUserTintActive] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
   const [step, setStep] = useState<Step>("idle");
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -151,8 +64,6 @@ export default function HomePage() {
     setError(null);
     setUploadedImageDataUrl(dataUrl);
     setImageDataUrl(dataUrl);
-    const detectedColor = await detectDominantImageColor(dataUrl);
-    if (detectedColor) setModelColor(detectedColor);
   }, []);
 
   const run = useCallback(async () => {
@@ -164,6 +75,9 @@ export default function HomePage() {
       URL.revokeObjectURL(glbObjectUrl);
       setGlbObjectUrl(null);
     }
+    setShowColorPicker(false);
+    setUserTintActive(false);
+    setModelColor(DEFAULT_MODEL_COLOR);
 
     const trimmedUser = prompt.trim();
     if (referenceMode === "generate" && !trimmedUser) {
@@ -211,12 +125,6 @@ export default function HomePage() {
 
       if (!referenceImageDataUrl) throw new Error("No 2D reference image available");
 
-      const detectedColor = await detectDominantImageColor(referenceImageDataUrl);
-      if (detectedColor) {
-        setModelColor(detectedColor);
-        pushLog(`Model color detected from 2D image: ${detectedColor}.`);
-      }
-
       setStep("mesh");
       pushLog("Step 2 -> 3: Hunyuan3D image -> textured 3D mesh / GLB.");
       const mr = await fetch("/api/image-to-3d", {
@@ -246,11 +154,13 @@ export default function HomePage() {
         const url = URL.createObjectURL(blob);
         setGlbObjectUrl(url);
         if (mj.warning) pushLog(mj.warning);
-        pushLog(
-          mj.textureApplied === false
-            ? "Untextured GLB ready; applying detected image color in the viewer."
-            : "Textured GLB ready; preserving colors from the 2D image when textures are present.",
-        );
+        if (mj.textureApplied === false) {
+          setModelColor(DEFAULT_MODEL_COLOR);
+          setUserTintActive(true);
+          pushLog("Untextured GLB ready; applying white tint in the viewer.");
+        } else {
+          pushLog("Textured GLB ready; use Change color next to the model to tint if needed.");
+        }
         pushLog("GLB ready.");
         setStep("done");
         return;
@@ -294,6 +204,8 @@ export default function HomePage() {
     }
   }, [async3d, glbObjectUrl, prompt, pushLog, referenceMode, uploadedImageDataUrl]);
 
+  const applyModelTint = applyFallbackColor || userTintActive;
+
   return (
     <main style={{ maxWidth: 960, margin: "0 auto", padding: "48px 24px 80px" }}>
       <header style={{ marginBottom: 32 }}>
@@ -303,7 +215,8 @@ export default function HomePage() {
         <p style={{ margin: 0, color: "var(--muted)", lineHeight: 1.55, maxWidth: "72ch" }}>
           Generate a 2D reference or upload your own image, then{" "}
           <strong style={{ color: "var(--text)", fontWeight: 600 }}>Hunyuan3D</strong> builds a textured GLB from it.
-          The viewer can also apply a detected dominant color as a fallback tint.
+          After the model loads, use <strong style={{ color: "var(--text)", fontWeight: 600 }}>Change color</strong> next to
+          the 3D preview to tint the mesh.
         </p>
       </header>
 
@@ -435,10 +348,10 @@ export default function HomePage() {
               disabled={busy}
               onChange={(e) => setApplyFallbackColor(e.target.checked)}
             />
-            <span>Apply detected color fallback</span>
+            <span>Apply white tint to untextured models</span>
             <span
-              aria-label={`Detected model color ${modelColor}`}
-              title={`Detected model color ${modelColor}`}
+              aria-label={`Model tint color ${modelColor}`}
+              title={`Model tint color ${modelColor}`}
               style={{
                 width: 18,
                 height: 18,
@@ -525,8 +438,88 @@ export default function HomePage() {
           )}
         </section>
         <section>
-          <h2 style={{ fontSize: "1rem", margin: "0 0 12px", fontWeight: 600 }}>3D preview (Hunyuan3D)</h2>
-          <ModelViewer src={glbObjectUrl} color={modelColor} applyColor={applyFallbackColor} />
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              marginBottom: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <h2 style={{ fontSize: "1rem", margin: 0, fontWeight: 600 }}>3D preview (Hunyuan3D)</h2>
+            {glbObjectUrl && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowColorPicker((open) => !open);
+                    setUserTintActive(true);
+                  }}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 8,
+                    border: "1px solid var(--border)",
+                    background: showColorPicker ? "rgba(124,156,255,0.16)" : "#0b0c0f",
+                    color: "var(--text)",
+                    fontWeight: 600,
+                    fontSize: "0.85rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  Change color
+                </button>
+                {showColorPicker && (
+                  <label
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "#0b0c0f",
+                      cursor: "pointer",
+                      fontSize: "0.85rem",
+                      color: "var(--muted)",
+                    }}
+                  >
+                    <input
+                      type="color"
+                      value={modelColor}
+                      onChange={(e) => {
+                        setModelColor(e.target.value);
+                        setUserTintActive(true);
+                      }}
+                      style={{
+                        width: 36,
+                        height: 28,
+                        padding: 0,
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
+                      }}
+                      aria-label="Pick model color"
+                    />
+                    {modelColor}
+                  </label>
+                )}
+                <span
+                  aria-hidden
+                  style={{
+                    width: 22,
+                    height: 22,
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: modelColor,
+                    boxShadow: applyModelTint ? `0 0 0 2px ${modelColor}55` : undefined,
+                  }}
+                />
+              </div>
+            )}
+          </div>
+          <ModelViewer src={glbObjectUrl} color={modelColor} applyColor={applyModelTint} />
           {!glbObjectUrl && (
             <div
               style={{
