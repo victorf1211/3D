@@ -9,7 +9,7 @@ function stripWhitespaceBase64(s: string): string {
 /** If the API put a full data URL inside b64_json, return raw base64 payload. */
 function peelDataUrlBase64(s: string): { mime?: string; b64: string } {
   const t = s.trim();
-  const m = /^data:([^;]+);base64,(.+)$/is.exec(t);
+  const m = /^data:([^;]+);base64,([\s\S]+)$/i.exec(t);
   if (m) {
     return { mime: m[1].trim(), b64: stripWhitespaceBase64(m[2]) };
   }
